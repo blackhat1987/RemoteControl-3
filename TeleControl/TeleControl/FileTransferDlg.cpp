@@ -1,5 +1,49 @@
-// FileTransferDlg.cpp : 实现文件
+//******************************************************************************
+// License:     MIT
+// Author:      Hoffman
+// Create Time: 2018-07-24
+// Description: 
+//      Achieve of class CFileTransferdlg's member method.
 //
+// Modify Log:
+//      2018-11-10    Hoffman
+//      Info: a. Modify achieve of below methods.
+//              a.1. UpdateTransportList(): 
+//                  a.1.1. Add DstFile and SrcFile columns.
+//              a.2. OnNMDblclkLstServerFilelist(): 
+//                  a.2.1. Optimization for deal whith path.
+//              a.3. OnFiledlgupdate(): 
+//                  a.3.1. Modify flush list control ability.
+//
+//      2018-11-13    Hoffman
+//      Info: a. Modify achieve of below methods.
+//              a.1. OnBnClickedBtnGetfile(): 
+//                  a.1.1. Initional the destination file name.
+//
+//      2018-11-14    Hoffman
+//      Info: a. Modify achieve of below methods.
+//              a.1. OnFiledlgupdate(): 
+//                  a.1.1. Modify deal with it had occured error.
+//                  a.1.2. Add deal with for FDUT_ERROR
+//              a.2 OnBnClickedBtnGetfile(): 
+//                  a.2.1. Modify deal with get uniq file name.
+//
+//      2018-11-27    Hoffman
+//      Info: a. Add below methods.
+//              a.1. OnNMRClickLstTransfertask();
+//
+//      2018-11-28    Hoffman
+//      Info: a. Add below mehods.
+//              a.1. OnTransportMnPauseselectedtask();
+//            b. Modify below  methods.
+//              b.1. OnHasfiledata();
+//                  b.1.1. Add ability for checking task status.
+//
+//      2018-12-19    Hoffman
+//      Info: a. Modify below methods.
+//              a.1. OnNMDblclkLstTargethostFilelist();
+//                  a.1.1.  Optimization for deal whith path.
+//******************************************************************************
 
 #include "stdafx.h"
 #include "TeleControl.h"
@@ -19,6 +63,10 @@ CFileTransferDlg::CFileTransferDlg(CString &ref_csIPAndPort,
     : CDialogEx(IDD_FILETRANSFER, pParent)
     , m_ref_IOCP(ref_IOCP)
     , m_ref_csIPAndPort(ref_csIPAndPort)
+    , m_lstTransferTaskList(m_TransportTaskManager, 
+                            m_acsTaskStatus,
+                            m_ref_IOCP,
+                            m_pstClientInfo)
 {
 #ifdef DEBUG
     DWORD dwError = -1;
@@ -48,9 +96,9 @@ CFileTransferDlg::CFileTransferDlg(CString &ref_csIPAndPort,
     if (NULL == m_pevtHadFiletoReceive)
     {
 #ifdef DEBUG
-            dwError = GetLastError();
-            GetErrorMessage(dwError, csErrorMessage);
-            OutputDebugStringWithInfo(csErrorMessage, __FILET__, __LINE__);
+        dwError = GetLastError();
+        GetErrorMessage(dwError, csErrorMessage);
+        OutputDebugStringWithInfo(csErrorMessage, __FILET__, __LINE__);
 #endif // DEBUG
     }
 }
@@ -66,13 +114,17 @@ CFileTransferDlg::~CFileTransferDlg()
     {
         CloseHandle(m_hGetTargetFileListEvent);
     }
+
 }
 
 void CFileTransferDlg::FreeResource()
 {
     m_bProcessQuit = TRUE;
+
     if (NULL != m_pevtHadFiletoReceive)
     {
+        m_pevtHadFiletoReceive->SetEvent();
+
         delete m_pevtHadFiletoReceive;
         m_pevtHadFiletoReceive = NULL;
     }
@@ -82,6 +134,18 @@ void CFileTransferDlg::FreeResource()
         delete m_pthdRecvFileData;
         m_pthdRecvFileData = NULL;
     }
+
+    int cntI = 0;
+    do
+    {
+        if (NULL != m_apMenu[cntI])
+        {
+            delete m_apMenu[cntI];
+            m_apMenu[cntI] = NULL;
+        }
+
+        cntI++;
+    } while (cntI < TOTAL_FTDMT_NUM);
 }
 
 void CFileTransferDlg::UpdateTransportList()
@@ -92,10 +156,10 @@ void CFileTransferDlg::UpdateTransportList()
     // Insert task info.
     do
     {
-        if (!vctAllTask.empty())
+        if (vctAllTask.empty())
         {
 #ifdef DEBUG
-            OutputDebugStringWithInfo(_T("No task in mamanger."),
+            OutputDebugStringWithInfo(_T("No task in mamanger.\r\n"),
                                       __FILET__,
                                       __LINE__);
 #endif // DEBUG
@@ -106,21 +170,26 @@ void CFileTransferDlg::UpdateTransportList()
         // Insert task to list.
         for (const PFILETRANSPORTTASK pstTask : vctAllTask)
         {
-            CString csFileFullName = 
-                pstTask->csFilePath_ + pstTask->csFileNewName_;
 
-            m_lstTransferTask.InsertItem(iIdx, csFileFullName);
+            m_lstTransferTaskList.InsertItem(iIdx,
+                                             pstTask->pathFileNameWithPathDst_);
+            m_lstTransferTaskList.SetItemText(
+                iIdx,
+                FTLC_SRCFILE,
+                pstTask->pathFileNameWithPathSrc_);
             // Insert task type.
-            m_lstTransferTask.SetItemText(iIdx,
-                                          FTLC_TASKSTATUS,
-                                          m_acsTaskType[pstTask->eTaskType_]);
+            m_lstTransferTaskList.SetItemText(
+                iIdx,
+                FTLC_TASKSTATUS,
+                m_acsTaskType[pstTask->eTaskType_]);
+
             // Insert total size of file.
             CString csTotalSize;
             _ui64tot(pstTask->ullFileTotalSize_,
                      csTotalSize.GetBufferSetLength(MAXBYTE), 
                      10);
             csTotalSize.ReleaseBuffer();
-            m_lstTransferTask.SetItemText(iIdx,
+            m_lstTransferTaskList.SetItemText(iIdx,
                                           FTLC_TOTALSIZE,
                                           csTotalSize);
 
@@ -130,110 +199,37 @@ void CFileTransferDlg::UpdateTransportList()
                      csTransmittedSize.GetBufferSetLength(MAXBYTE),
                      10);
             csTransmittedSize.ReleaseBuffer();
-            m_lstTransferTask.SetItemText(iIdx,
-                                          FTLC_TRANSMITTEDSIZE,
-                                          csTransmittedSize);
+            m_lstTransferTaskList.SetItemText(iIdx,
+                                              FTLC_TRANSMITTEDSIZE,
+                                              csTransmittedSize);
 
             // Insert task status.
-            m_lstTransferTask.SetItemText(
+            m_lstTransferTaskList.SetItemText(
                 iIdx,
                 FTLC_TASKSTATUS,
                 m_acsTaskStatus[pstTask->eTaskStatus_]);
+
+            // Insert task id.
+            m_lstTransferTaskList.SetItemData(iIdx, pstTask->ulId_);
 
             ++iIdx;
         } //! for "Insert task to list" END
     } while (FALSE);  // while "Insert task info" END
 } //! CFileTransferDlg::UpdateTransportList END
 
-void CFileTransferDlg::InsertFileDataToQueue(FILEDATAINQUEUE &ref_stFileData)
-{
-    m_CriticalSection.Lock();
-    m_queFileData.push(ref_stFileData);
-    m_CriticalSection.Unlock();
-}
 
-FILEDATAINQUEUE CFileTransferDlg::GetFileDataFromQueue()
-{
-    FILEDATAINQUEUE stFileData;
-    m_CriticalSection.Lock();
-    if (!m_queFileData.empty())
-    {
-        stFileData = m_queFileData.front();
-        m_queFileData.pop();
-    }
-    else
-    {
-#ifdef DEBUG
-        OutputDebugStringWithInfo(_T("Want to get file data "
-                                     "but queue is empty.\r\n"), 
-                                  __FILET__, 
-                                  __LINE__);
-#endif // DEBUG
-    }
-    m_CriticalSection.Unlock();
-
-    return stFileData;
-} //! CFileTransferDlg::GetFileDataFromQueue END
-
-BOOL CFileTransferDlg::CheckFileDataQueueEmpty()
-{
-    m_CriticalSection.Lock();
-    BOOL bRet = m_queFileData.empty();
-    m_CriticalSection.Unlock();
-    if (!bRet)
-    {
-#ifdef DEBUG
-        OutputDebugStringWithInfo(_T("Has data in queue."),
-                                  __FILET__,
-                                  __LINE__);
-#endif // DEBUG
-    }
-
-    return bRet;
-} //! CFileTransferDlg::CheckFileDataQueueEmpty END
-
-BOOL CFileTransferDlg::WaitRecvFileEvent()
-{
-#ifdef DEBUG
-    DWORD dwError = -1;
-    CString csErrorMessage;
-#endif // DEBUG
-
-    BOOL bRet = FALSE;
-    DWORD dwRet = WaitForSingleObject(m_pevtHadFiletoReceive->m_hObject, 
-                                      WAIT_HADFILE_EVENT_TIME);
-    if (WAIT_OBJECT_0 == dwRet)
-    {
-        bRet = TRUE;
-#ifdef DEBUG
-        OutputDebugStringWithInfo(_T("Has file event had signaled\r\n"), 
-                                  __FILET__, 
-                                  __LINE__);
-#endif // DEBUG
-    }
-    else if (dwRet == WAIT_FAILED)
-    {
-#ifdef DEBUG
-        dwError = GetLastError();
-        GetErrorMessage(dwError, csErrorMessage);
-        OutputDebugStringWithInfo(csErrorMessage, __FILET__, __LINE__);
-#endif // DEBUG
-    }
-
-    return bRet;
-} //! CFileTransferDlg::WaitRecvFileEvent END
 
 void CFileTransferDlg::DoDataExchange(CDataExchange* pDX)
 {
     CDialogEx::DoDataExchange(pDX);
-    DDX_Control(pDX, IDC_CMB_SERVER_DEVICE, m_cmbServerDevice);
+    DDX_Control(pDX, IDC_CMB_SERVER_DEVICE, m_cmbServerDriver);
     DDX_Control(pDX, IDC_EDT_SERVER_FILEPATH, m_edtServerFilePath);
     DDX_Control(pDX, IDC_CMB_SERVER_FILELIST_STYLE, m_cmbServerFileListStyle);
     DDX_Control(pDX, IDC_CMB_TARGETHOST_FILELIST_STYLE, m_cmbTargetHostFileListStyle);
     DDX_Control(pDX, IDC_LST_SERVER_FILELIST, m_lstServerFileList);
     DDX_Control(pDX, IDC_LST_TARGETHOST_FILELIST, m_lstTargetHostFileList);
-    DDX_Control(pDX, IDC_CMB_TARGETHOST_DEVICE, m_cmbTargetHostDevice);
-    DDX_Control(pDX, IDC_LST_TRANSFERTASK, m_lstTransferTask);
+    DDX_Control(pDX, IDC_CMB_TARGETHOST_DEVICE, m_cmbTargetHostDriver);
+    DDX_Control(pDX, IDC_LST_TRANSFERTASK, m_lstTransferTaskList);
     DDX_Control(pDX, IDC_EDT_TARGETHOST_FILEPATH, m_edtTargetHostFilePath);
 }
 
@@ -242,15 +238,18 @@ BEGIN_MESSAGE_MAP(CFileTransferDlg, CDialogEx)
     ON_BN_CLICKED(IDC_BTN_SERVER_SKIP, &CFileTransferDlg::OnBnClickedBtnServerSkip)
     ON_NOTIFY(NM_DBLCLK, IDC_LST_SERVER_FILELIST, &CFileTransferDlg::OnNMDblclkLstServerFilelist)
     ON_CBN_SELCHANGE(IDC_CMB_SERVER_FILELIST_STYLE, &CFileTransferDlg::OnCbnSelchangeCmbServerFilelistStyle)
-    ON_CBN_SELCHANGE(IDC_CMB_SERVER_DEVICE, &CFileTransferDlg::OnCbnSelchangeCmbServerDevice)
+    ON_CBN_SELCHANGE(IDC_CMB_SERVER_DEVICE, &CFileTransferDlg::OnCbnSelchangeCmbServerDriver)
     ON_CBN_SELCHANGE(IDC_CMB_TARGETHOST_FILELIST_STYLE, &CFileTransferDlg::OnCbnSelchangeCmbTargethostFilelistStyle)
-    ON_CBN_SELCHANGE(IDC_CMB_TARGETHOST_DEVICE, &CFileTransferDlg::OnCbnSelchangeCmbTargethostDevice)
+    ON_CBN_SELCHANGE(IDC_CMB_TARGETHOST_DEVICE, &CFileTransferDlg::OnCbnSelchangeCmbTargethostDriver)
     ON_BN_CLICKED(IDC_BTN_TARGETHOST_SKIP, &CFileTransferDlg::OnBnClickedBtnTargethostSkip)
     ON_BN_CLICKED(IDC_BTN_GETFILE, &CFileTransferDlg::OnBnClickedBtnGetfile)
     ON_BN_CLICKED(IDC_BTN_PUTFILE, &CFileTransferDlg::OnBnClickedBtnPutfile)
     ON_NOTIFY(NM_DBLCLK, IDC_LST_TARGETHOST_FILELIST, &CFileTransferDlg::OnNMDblclkLstTargethostFilelist)
     ON_WM_CLOSE()
     ON_MESSAGE(WM_HASFILEDATA, &CFileTransferDlg::OnHasfiledata)
+    ON_MESSAGE(WM_FILEDLGUPDATE, &CFileTransferDlg::OnFiledlgupdate)
+    ON_WM_DESTROY()
+    ON_NOTIFY(NM_RCLICK, IDC_LST_TRANSFERTASK, &CFileTransferDlg::OnNMRClickLstTransfertask)
 END_MESSAGE_MAP()
 
 
@@ -259,15 +258,14 @@ END_MESSAGE_MAP()
 
 void CFileTransferDlg::OnBnClickedBtnServerSkip()
 {
-    if (IsDirectory(m_cmbServerDevice,
-                    m_edtServerFilePath))
+    m_edtServerFilePath.GetWindowText(m_pathServerFilePath);
+
+    if (m_pathServerFilePath.IsDirectory())
     {
         ShowFileList(m_lstServerFileList,
-                     m_cmbServerDevice,
-                     m_edtServerFilePath,
                      m_iServerActiveStyleIdx);
     }
-}
+} //! CFileTransferDlg::OnBnClickedBtnServerSkip END
 
 
 BOOL CFileTransferDlg::OnInitDialog()
@@ -322,7 +320,7 @@ BOOL CFileTransferDlg::OnInitDialog()
     m_lstServerFileList.InsertColumn(iIdx++,
                                      _T("File Name"), 
                                      LVCFMT_LEFT, 
-                                     150);
+                                     200);
     m_lstServerFileList.InsertColumn(iIdx++, 
                                      _T("Modify Time"), 
                                      LVCFMT_LEFT, 
@@ -351,8 +349,8 @@ BOOL CFileTransferDlg::OnInitDialog()
 
     // Get Driver.
     DWORD dwRet = 
-        GetLogicalDriveStrings(MAXBYTE - 1,
-                               m_csDevice.GetBufferSetLength(MAXBYTE - 1));
+        GetLogicalDriveStrings(MAXWORD,
+                               m_csDevice.GetBufferSetLength(MAXWORD));
     m_csDevice.ReleaseBuffer();
     if (dwRet == 0)
     {
@@ -362,7 +360,7 @@ BOOL CFileTransferDlg::OnInitDialog()
         OutputDebugStringWithInfo(csErrorMessage, __FILET__, __LINE__);
 #endif // DEBUG
     }
-    else if (dwRet > MAXBYTE)
+    else if (dwRet > MAXWORD)
     {
         CString csFailInfo;
         csFailInfo.Format(_T("盘符名称存储缓冲区过小, 需要字节数：%u"), dwRet);
@@ -370,7 +368,7 @@ BOOL CFileTransferDlg::OnInitDialog()
     }
 
     // Cut driver.
-    CString csDriveName(_T(""));
+    CString csDriveName;
     DWORD cntDriveNum = 0;
     TCHAR *pcTmpChar = m_csDevice.GetBuffer();
     for (size_t cntI = 0; cntI < dwRet; cntI++)
@@ -383,19 +381,19 @@ BOOL CFileTransferDlg::OnInitDialog()
         {
             if (csDriveName != _T(""))
             {
-                m_cmbServerDevice.InsertString(cntDriveNum, csDriveName);
+                m_cmbServerDriver.InsertString(cntDriveNum, csDriveName);
                 ++cntDriveNum;
                 csDriveName.Empty();
             }
         }
     }
 
-    m_cmbServerDevice.SetCurSel(0);
+    m_cmbServerDriver.SetCurSel(0);
+    m_cmbServerDriver.GetLBText(0, m_pathServerFilePath);
+    m_edtServerFilePath.SetWindowText(m_pathServerFilePath);
 
     // Show files of server client.
     ShowFileList(m_lstServerFileList,
-                 m_cmbServerDevice,
-                 m_edtServerFilePath,
                  m_iServerActiveStyleIdx);
 
     // ******************Target******************
@@ -459,9 +457,9 @@ BOOL CFileTransferDlg::OnInitDialog()
     // Cut driver.
     csDriveName = _T("");
     cntDriveNum = 0;
-    pcTmpChar = m_csTargetHostDevice.GetBuffer();
+    pcTmpChar = m_csTargetHostDriverList.GetBuffer();
     for (size_t cntI = 0;
-         cntI < (m_uiTargetHostDeviceLen / sizeof(TCHAR));
+         cntI < (m_uiTargetHostDriverLen / sizeof(TCHAR));
          cntI++)
     {
         if (pcTmpChar[cntI] != _T('\0'))
@@ -472,46 +470,54 @@ BOOL CFileTransferDlg::OnInitDialog()
         {
             if (csDriveName != _T(""))
             {
-                m_cmbTargetHostDevice.InsertString(cntDriveNum,
+                m_cmbTargetHostDriver.InsertString(cntDriveNum,
                                                    csDriveName);
                 ++cntDriveNum;
                 csDriveName.Empty();
             }
         }
     }
-    m_cmbTargetHostDevice.SetCurSel(0);
+    m_cmbTargetHostDriver.SetCurSel(0);
+    m_cmbTargetHostDriver.GetLBText(0, m_pathTartetHostFilePath);
+    m_edtTargetHostFilePath.SetWindowText(m_pathTartetHostFilePath);
 
 
     // Show filelist of target host.
     ShowFileList(m_lstTargetHostFileList,
-                 m_cmbTargetHostDevice,
-                 m_edtTargetHostFilePath,
                  m_iTargetHostActiveStyleIdx);
-
 
     //******************Transmission list******************
     // Set table title.
     iIdx = 0;
-    m_lstTransferTask.InsertColumn(iIdx++, 
-                                   _T("File Full Name"),
-                                   LVCFMT_LEFT,
-                                   150);
-    m_lstTransferTask.InsertColumn(iIdx++,
-                                   _T("Task Type"),
-                                   LVCFMT_LEFT,
-                                   70);
-    m_lstTransferTask.InsertColumn(iIdx++, _T("Total Size"), LVCFMT_LEFT, 70);
-    m_lstTransferTask.InsertColumn(iIdx++,
-                                   _T("Transmitted Szie"),
-                                   LVCFMT_LEFT,
-                                   70);
-    m_lstTransferTask.InsertColumn(iIdx++,
-                                   _T("Task Status"),
-                                   LVCFMT_LEFT,
-                                   70);
+    m_lstTransferTaskList.InsertColumn(iIdx++,
+                                       _T("Destination File"),
+                                       LVCFMT_LEFT,
+                                       200);
+    m_lstTransferTaskList.InsertColumn(iIdx++,
+                                       _T("Source File"),
+                                       LVCFMT_LEFT,
+                                       200);
+    m_lstTransferTaskList.InsertColumn(iIdx++,
+                                       _T("Task Type"),
+                                       LVCFMT_LEFT,
+                                       70);
+    m_lstTransferTaskList.InsertColumn(iIdx++,
+                                       _T("Total Size"),
+                                       LVCFMT_LEFT,
+                                       70);
+    m_lstTransferTaskList.InsertColumn(iIdx++,
+                                       _T("Transmitted Szie"),
+                                       LVCFMT_LEFT,
+                                       70);
+    m_lstTransferTaskList.InsertColumn(iIdx++,
+                                       _T("Task Status"),
+                                       LVCFMT_LEFT,
+                                       70);
 
+    UpdateTransportList();
 
     //******************Recevie File data thread******************
+
     // Create thread objet.
     //*****************************************************
     //* Alarm * This memroy will free when dialog destory.
@@ -543,69 +549,26 @@ BOOL CFileTransferDlg::OnInitDialog()
 } //! CFileTransferDlg::OnInitDialog END
 
 void CFileTransferDlg::ShowFileList(CListCtrl &ref_lstTarget,
-                                    CComboBox &ref_cmbDevice,
-                                    CEdit &ref_edtFilePath,
+                                    //CComboBox &ref_cmbDevice,
+                                    //CEdit &ref_edtFilePath,
                                     const int &ref_iActiveStyleIdx)
 {
     // Clean all items in list.
     ref_lstTarget.DeleteAllItems();
-
-    // Get driver.
-    CString csTargetDrive;
-    int iIndex = ref_cmbDevice.GetCurSel();
-    if (iIndex < 0)
-    {
-        OutputDebugString(_T("盘符下拉框未选择\r\n"));
-        return;
-    }
-    ref_cmbDevice.GetLBText(iIndex, csTargetDrive);
    
-    // Get subpath.
-    CString csTargetPath;
-    ref_edtFilePath.GetWindowText(csTargetPath);
-
-    // Get full path.
-    CString csCompeletPath = csTargetDrive + csTargetPath;
-
     // Target host.
     if (ref_lstTarget == m_lstTargetHostFileList)
     {
-        // 投递请求消息获取目标路径的文件
-        PPACKETFORMAT pstPacket = 
-            (PPACKETFORMAT)m_pstClientInfo->szSendTmpBuffer_;
-
-        // *注意* 写入数据时要加锁
-        m_pstClientInfo->CriticalSection_.Lock();
-        pstPacket->ePacketType_ = PT_FILE_LIST;
-        pstPacket->dwSize_ = 
-            (csCompeletPath.GetLength() + 1) * sizeof(TCHAR);
-
-        memmove(pstPacket->szContent_,
-                csCompeletPath.GetBuffer(),
-                pstPacket->dwSize_);
-
-        m_pstClientInfo->SendBuffer_.Write(
-            (PBYTE)m_pstClientInfo->szSendTmpBuffer_,
-            PACKET_HEADER_SIZE + pstPacket->dwSize_);
-
-        // 清理发送临时缓冲区
-        memset(m_pstClientInfo->szSendTmpBuffer_,
-               0,
-               PACKET_HEADER_SIZE + pstPacket->dwSize_);
-
-        // 投递发送请求
-        BOOL bRet = 
-            m_ref_IOCP.PostSendRequst(m_pstClientInfo->sctClientSocket_,
-                                      m_pstClientInfo->SendBuffer_);
-
-        m_pstClientInfo->SendBuffer_.ClearBuffer();
-        m_pstClientInfo->CriticalSection_.Unlock();
+        SendDataUseIOCP(m_pstClientInfo,
+                        m_ref_IOCP,
+                        m_pathTartetHostFilePath,
+                        PT_FILE_LIST);
 
         WaitForSingleObject(m_hGetTargetFileListEvent, INFINITE);
 
         int iIdx = 0;
-        std::basic_string<TCHAR> strFileList = m_csFileList.GetString();
-        // 遍历插入文件列表
+        std::basic_string<TCHAR> strFileList = m_csTargetHostFileList.GetString();
+        // Traversing and insert result into file list.
         while (!strFileList.empty())
         {
             // First is index of Icon.
@@ -668,19 +631,20 @@ void CFileTransferDlg::ShowFileList(CListCtrl &ref_lstTarget,
             }
             else
             {
-                OutputDebugString(_T("正则表达式有误"));
+
             }
-        } //! while (Traversing and insert filelist) END
-    } // if (Target host) END
+        } //! while "Traversing and insert filelist" END
+    } //! if "Target host" END
     // Local host
     else if (ref_lstTarget == m_lstServerFileList)
     {
         CFileFind Finder;
-        CString csWildcard(csCompeletPath + _T("\\*.*"));
+        CString csWildcard(m_pathServerFilePath + _T("\\*.*"));
 
         BOOL bWorking = Finder.FindFile(csWildcard);
+
         int iIdx = 0;
-        // 遍历文件列表
+        // Traversing local file list.
         while (bWorking)
         {
             bWorking = Finder.FindNextFile();
@@ -689,7 +653,7 @@ void CFileTransferDlg::ShowFileList(CListCtrl &ref_lstTarget,
             // Get file attributes.
             DWORD dwFileAttribute = GetFileAttributes(csFilePath);
 
-            // 获取文件对应的系统图标索引
+            // Get icon index of file type.
             SHFILEINFO stSfi;
             SHGetFileInfo(csFilePath,
                           dwFileAttribute,
@@ -713,7 +677,7 @@ void CFileTransferDlg::ShowFileList(CListCtrl &ref_lstTarget,
             }
 
             ++iIdx;
-        } //! while 遍历文件列表 END
+        } //! while "Traversing local file list" END
 
         Finder.Close();
     } // if (Local host) END
@@ -732,24 +696,17 @@ void CFileTransferDlg::ChangeListStyle(CListCtrl &ref_lstTarget,
         return;
     }
 
-    DWORD adwStyle[4] = {
-        LVS_ICON,
-        LVS_SMALLICON,
-        LVS_LIST,
-        LVS_REPORT,
-    };
-
     // Modify style of list control.
-    DWORD dwAddStyle = adwStyle[iNewIndex];
+    DWORD dwAddStyle = m_adwStyle[iNewIndex];
     DWORD dwRemoveStyle = 0;
     if (iOldIndex != -1)
     {
-        dwRemoveStyle = adwStyle[iOldIndex];
+        dwRemoveStyle = m_adwStyle[iOldIndex];
     }
 
     ref_lstTarget.ModifyStyle(dwRemoveStyle, dwAddStyle, TRUE);
     ref_iActiveStyleIdx = iNewIndex;
-}
+} //! CFileTransferDlg::ChangeListStyle END
 
 CString CFileTransferDlg::GetSubName(CComboBox &ref_cmbDevice,
                                      CEdit &ref_edtFilePath,
@@ -777,55 +734,47 @@ CString CFileTransferDlg::GetSubName(CComboBox &ref_cmbDevice,
     return csDrive;
 }
 
-void CFileTransferDlg::BackParentDirctory(CComboBox &ref_cmbDevice,
-                                          CEdit &ref_edtFilePath)
+BOOL CFileTransferDlg::BackParentDirctory(
+    FILETRANSMITTIONPARTICIPANTTYPE eParticipantType)
+                                         
 {
-    CString csDrive;
-    CString csSubPath;
-    // Get Driver.
-    int iIndex = ref_cmbDevice.GetCurSel();
-    ref_cmbDevice.GetLBText(iIndex, csDrive);
+#ifdef DEBUG
+    DWORD dwError = -1;
+    CString csErrorMessage;
+    DWORD dwLine = 0;
+#endif // DEBUG
+    BOOL bNoError = FALSE;
 
-    // Get subpath.
-    ref_edtFilePath.GetWindowText(csSubPath);
-
-    // *注意* FindFile要执行成功，需要保证后面没有反斜杠
-    CString csCompleteFileName = csDrive + csSubPath;
-    if (csCompleteFileName.Right(1) == _T("\\"))
+    do
     {
-        csCompleteFileName =
-            csCompleteFileName.Left(csCompleteFileName.GetLength() - 1);
+        // Change path to parent.
+        bNoError = m_appathFilePath[eParticipantType]->RemoveFileSpec();
+        if (!bNoError)
+        {
+#ifdef DEBUG
+            dwLine = __LINE__;
+#endif // DEBUG
+        }
+
+        // Put parent path into edit control.
+        m_apedtPath[eParticipantType]->SetWindowText(
+            *m_appathFilePath[eParticipantType]);
+
+        // Skip.
+        (this->*m_apfncClickBtnSkip[eParticipantType])();
+    } while (FALSE);
+
+    if (!bNoError)
+    {
+#ifdef DEBUG
+        dwError = GetLastError();
+        GetErrorMessage(dwError, csErrorMessage);
+        OutputDebugStringWithInfo(csErrorMessage, __FILET__, dwLine);
+#endif // DEBU
     }
 
-    CFileFind TargetFind;
-    BOOL bRet = TargetFind.FindFile(csCompleteFileName);
-    CString csParent;
-
-    if (bRet)
-    {
-        TargetFind.FindNextFile();
-        csParent = TargetFind.GetRoot();
-    }
-
-    if (csParent.Right(1) == _T("\\"))
-    {
-        csParent =
-            csParent.Left(csParent.GetLength() - 1);
-    }
-
-    csSubPath = csParent.Right(csParent.GetLength() - 3);
-
-    ref_edtFilePath.SetWindowText(csSubPath);
-
-    if (ref_cmbDevice == m_cmbServerDevice)
-    {
-        OnBnClickedBtnServerSkip();
-    }
-    else
-    {
-        OnBnClickedBtnTargethostSkip();
-    }
-}
+    return bNoError;
+} //! CFileTransferDlg::BackParentDirctory END
 
 BOOL CFileTransferDlg::IsDirectory(CComboBox &ref_cmbDevice,
                                    CEdit &ref_edtFilePath,
@@ -867,13 +816,14 @@ void CFileTransferDlg::OnNMDblclkLstServerFilelist(NMHDR *pNMHDR,
     if (iItem >= 0)
     {
         CString csTargetFileTitle;
-        csTargetFileTitle = m_lstServerFileList.GetItemText(iItem, 0); 
+        csTargetFileTitle = m_lstServerFileList.GetItemText(iItem,
+                                                            FLCT_FILENAME); 
         
         // If it is '..', go to parent direcotry.
         if (csTargetFileTitle == _T(".."))
         {
-            BackParentDirctory(m_cmbServerDevice, 
-                               m_edtServerFilePath);
+            BackParentDirctory(FTPT_SERVER);
+            m_edtServerFilePath.SetWindowText(m_pathServerFilePath);
             return;
         }
         else if (csTargetFileTitle == _T("."))
@@ -882,30 +832,16 @@ void CFileTransferDlg::OnNMDblclkLstServerFilelist(NMHDR *pNMHDR,
             return;
         }
 
-        // 拼接子名字
-        // 
-        CString csTargetFileSubName = csTargetFileTitle;
-        GetSubName(m_cmbServerDevice,
-                   m_edtServerFilePath,
-                   csTargetFileSubName);
-
-        if (IsDirectory(m_cmbServerDevice,
-                        m_edtServerFilePath,
-                        &csTargetFileTitle))
-        {
-            // Update text of title.
-            m_edtServerFilePath.SetWindowText(csTargetFileSubName);
-            ShowFileList(m_lstServerFileList,
-                         m_cmbServerDevice,
-                         m_edtServerFilePath,
-                         m_iServerActiveStyleIdx);
-        }
+        m_pathServerFilePath.Append(csTargetFileTitle);
+        OnBnClickedBtnServerSkip();
     }
 
     *pResult = 0;
 }
 
 
+// Deal with the message user change style use 
+// the server list style combox control.
 void CFileTransferDlg::OnCbnSelchangeCmbServerFilelistStyle()
 {
     int iIndex = m_cmbServerFileListStyle.GetCurSel();
@@ -913,51 +849,51 @@ void CFileTransferDlg::OnCbnSelchangeCmbServerFilelistStyle()
                     m_iServerActiveStyleIdx,
                     m_iServerActiveStyleIdx,
                     iIndex);
-}
+} //! CFileTransferDlg::OnCbnSelchangeCmbServerFilelistStyle END
 
 
 // Deal with show filelist when ComboBox is change
 // that device of local host.
-void CFileTransferDlg::OnCbnSelchangeCmbServerDevice()
+void CFileTransferDlg::OnCbnSelchangeCmbServerDriver()
 {
-    // Clean edit of path.
-    m_edtServerFilePath.SetWindowText(_T(""));
+    int iIdx = m_cmbServerDriver.GetCurSel();
+    m_cmbServerDriver.GetLBText(iIdx, m_pathServerFilePath);
 
     // Show file list.
     ShowFileList(m_lstServerFileList,
-                 m_cmbServerDevice,
-                 m_edtServerFilePath,
                  m_iServerActiveStyleIdx);
-} //! CFileTransferDlg::OnCbnSelchangeCmbServerDevice End
+} //! CFileTransferDlg::OnCbnSelchangeCmbServerDevice END
 
-// Deal with
+// Deal with the message user change style use 
+// the target host list style combox control.
 void CFileTransferDlg::OnCbnSelchangeCmbTargethostFilelistStyle()
 {
-    // TODO: 在此添加控件通知处理程序代码
-    
-}
+    int iIndex = m_cmbTargetHostFileListStyle.GetCurSel();
+    ChangeListStyle(m_lstTargetHostFileList,
+                    m_iTargetHostActiveStyleIdx,
+                    m_iTargetHostActiveStyleIdx,
+                    iIndex);
+} //! CFileTransferDlg::OnCbnSelchangeCmbTargethostFilelistStyle END
 
 // Deal with show filelist when ComboBox is change
 // that device of target host.
-void CFileTransferDlg::OnCbnSelchangeCmbTargethostDevice()
+void CFileTransferDlg::OnCbnSelchangeCmbTargethostDriver()
 {
-    m_edtTargetHostFilePath.SetWindowText(_T(""));
+    int iIdx = m_cmbServerDriver.GetCurSel();
+    m_cmbServerDriver.GetLBText(iIdx, m_pathServerFilePath);
 
     ShowFileList(m_lstTargetHostFileList,
-                 m_cmbTargetHostDevice,
-                 m_edtTargetHostFilePath,
                  m_iTargetHostActiveStyleIdx);
-}
+} //! CFileTransferDlg::OnCbnSelchangeCmbTargethostDriver END
 
 // Deal with click the 'go' button of target host.
 void CFileTransferDlg::OnBnClickedBtnTargethostSkip()
 {
-    if (IsDirectory(m_cmbTargetHostDevice,
-                    m_edtTargetHostFilePath))
+    m_edtTargetHostFilePath.GetWindowText(m_pathTartetHostFilePath);
+
+    if (m_pathTartetHostFilePath.IsDirectory())
     {
         ShowFileList(m_lstTargetHostFileList,
-                     m_cmbTargetHostDevice,
-                     m_edtTargetHostFilePath,
                      m_iTargetHostActiveStyleIdx);
     }
 } //! CFileTransferDlg::OnBnClickedBtnTargethostSkip END
@@ -966,31 +902,32 @@ void CFileTransferDlg::OnBnClickedBtnTargethostSkip()
 // Deal with click the '<' button.
 void CFileTransferDlg::OnBnClickedBtnGetfile()
 {
-    // Format: "FilePath?FileName|FileName|..."
+#ifdef DEBUG
+    DWORD dwError = -1;
+    CString csErrorMessage;
+    DWORD dwLine = 0;
+    BOOL bOutputErrMsg = FALSE;
+#endif // DEBUG
+    // Format: "FilePath?FileName:pos:id|FileName:pos:id|..."
     CString csFilesListSendToTargetHost;
+    BOOL bRet = FALSE;
 
-    // Get name of files need to downlord, and add mission to task manager.
-    POSITION posI = m_lstTargetHostFileList.GetFirstSelectedItemPosition();
-    if (NULL == posI)
+    do
     {
-        TRACE(_T("No items were selected!\n"));
-    }
-    else
-    {
+        // Get name of files need to downlord, and add mission to task manager.
+        POSITION posI = m_lstTargetHostFileList.GetFirstSelectedItemPosition();
+        if (NULL == posI)
+        {
+            break;
+        }
+
         CString csFileName;
         CString csFileSize;
-        CString csFileFullName;
 
         // Get full path.
-        CString csFileSubPath;
-        CString csDriveLetter;
-    
-        int iIndex = m_cmbTargetHostDevice.GetCurSel();
-        m_cmbTargetHostDevice.GetLBText(iIndex, csDriveLetter);
+        CPath pathFileNameWithPathSrc = m_pathTartetHostFilePath;
 
-        m_edtTargetHostFilePath.GetWindowText(csFileSubPath);
-
-        csFilesListSendToTargetHost = csDriveLetter + csFileSubPath + _T("?");
+        csFilesListSendToTargetHost = m_pathTartetHostFilePath + _T("?");
 
         // Traversing Item.
         while (posI)
@@ -999,40 +936,77 @@ void CFileTransferDlg::OnBnClickedBtnGetfile()
 
             csFileName =
                 m_lstTargetHostFileList.GetItemText(iItemIndex, FLCT_FILENAME);
-            csFileSize = 
+            csFileSize =
                 m_lstTargetHostFileList.GetItemText(iItemIndex, FLCT_FILESIZE);
 
-            csFileFullName = csDriveLetter + csFileSubPath + csFileName;
+            pathFileNameWithPathSrc.Append(csFileName);
 
-            // Add to the send list.
-            csFilesListSendToTargetHost += csFileName + _T(":0") + _T("|");
+            // Insert file name into send list.
+            TCHAR szTaskId[MAXBYTE] = { 0 };
+ 
+            csFilesListSendToTargetHost +=
+                csFileName + _T(":0") + _T(":") + 
+                _ultot(m_ulNextTaskId, szTaskId, 10) + _T("|");
 
-            //*************************************
-            //*ALARM* This memory will free when manager distroy.
-            //*************************************
+
+            //******************************************************************
+            //* Alarm * This memory will free when manager distroy.
+            //******************************************************************
             PFILETRANSPORTTASK pstTaskInfo = new FILETRANSPORTTASK;
-            pstTaskInfo->csFilePath_ = csDriveLetter + csFileSubPath;
-            pstTaskInfo->csFileOrignalName_ = csFileName;
+            pstTaskInfo->pathFileNameWithPathSrc_ = pathFileNameWithPathSrc;
             pstTaskInfo->eTaskType_ = FTT_GETFILE;
             pstTaskInfo->ullFileTotalSize_ = _ttoi(csFileSize);
             pstTaskInfo->ullTransmissionSize_ = 0;
-            pstTaskInfo->eTaskStatus_ = FTS_START;
+            pstTaskInfo->eTaskStatus_ = FTS_PENDING;
+            pstTaskInfo->ulId_ = m_ulNextTaskId++;
+            pstTaskInfo->pathFileNameWithPathDst_ = pathFileNameWithPathSrc;
+
+            // Check file exist or not.
+            if (pstTaskInfo->pathFileNameWithPathDst_.FileExists())
+            {
+                // Create uniq name.
+                CPath phUniqFileNameWithPath;
+                CPath pathFileNameDst = pstTaskInfo->pathFileNameWithPathDst_;
+                CPath pathFilePathDst = pstTaskInfo->pathFileNameWithPathDst_;
+                pathFileNameDst.StripPath();
+                pathFilePathDst.RemoveFileSpec();
+
+
+                TCHAR szUniqFileNameWithPath[MAX_PATH] = { 0 };
+                bRet = PathYetAnotherMakeUniqueName(szUniqFileNameWithPath,
+                                                    pathFilePathDst,
+                                                    NULL,
+                                                    pathFileNameDst);
+                if (!bRet)
+                {
+#ifdef DEBUG
+                    dwError = GetLastError();
+                    GetErrorMessage(dwError, csErrorMessage);
+                    OutputDebugStringWithInfo(csErrorMessage,
+                                              __FILET__,
+                                              __LINE__);
+#endif // DEBUG 
+                    continue;
+                }
+
+                pstTaskInfo->pathFileNameWithPathDst_ =
+                    szUniqFileNameWithPath;
+            }
 
             // Add task to manager.
-            m_TransportTaskManager.InsertGetFileTask(csFileFullName,
+            m_TransportTaskManager.InsertGetFileTask(pathFileNameWithPathSrc,
                                                      pstTaskInfo);
         } // while "Traversing Item" END
-    } //! if "Item is selected" END
 
-    // Update The UI.
-    
+        UpdateTransportList();
 
-    // Send file command and file list to target host.
-    SendDataUseIOCP(m_pstClientInfo,
-                    m_ref_IOCP,
-                    csFilesListSendToTargetHost,
-                    PT_FILECOMMAND_GETFILE);
+        // Send file command and file list to target host.
+        SendDataUseIOCP(m_pstClientInfo,
+                        m_ref_IOCP,
+                        csFilesListSendToTargetHost,
+                        PT_FILECOMMAND_GETFILE);
 
+    } while (FALSE);
 } //! CFileTransferDlg::OnBnClickedBtnGetfile END
 
 
@@ -1054,13 +1028,14 @@ void CFileTransferDlg::OnNMDblclkLstTargethostFilelist(NMHDR *pNMHDR,
     if (iItem >= 0)
     {
         CString csTargetFileTitle;
-        csTargetFileTitle = m_lstTargetHostFileList.GetItemText(iItem, 0); 
+        csTargetFileTitle = m_lstTargetHostFileList.GetItemText(iItem,
+                                                                FLCT_FILENAME);
         
         // If it is '..', go to parent direcotry.
         if (csTargetFileTitle == _T(".."))
         {
-            BackParentDirctory(m_cmbTargetHostDevice, 
-                               m_edtTargetHostFilePath);
+            BackParentDirctory(FTPT_CLIENT);
+            m_edtTargetHostFilePath.SetWindowText(m_pathTartetHostFilePath);
             return;
         }
         else if (csTargetFileTitle == _T("."))
@@ -1069,23 +1044,8 @@ void CFileTransferDlg::OnNMDblclkLstTargethostFilelist(NMHDR *pNMHDR,
             return;
         }
 
-        // 拼接子名字
-        CString csTargetFileSubName = csTargetFileTitle;
-        GetSubName(m_cmbTargetHostDevice,
-                   m_edtTargetHostFilePath,
-                   csTargetFileSubName);
-
-        if (IsDirectory(m_cmbTargetHostDevice,
-                        m_edtTargetHostFilePath,
-                        &csTargetFileTitle))
-        {
-            // Modify the text of title.
-            m_edtTargetHostFilePath.SetWindowText(csTargetFileSubName);
-            ShowFileList(m_lstTargetHostFileList,
-                         m_cmbTargetHostDevice,
-                         m_edtTargetHostFilePath,
-                         m_iTargetHostActiveStyleIdx);
-        }
+        m_pathTartetHostFilePath.Append(csTargetFileTitle);
+        OnBnClickedBtnTargethostSkip();
     }
 
     *pResult = 0;
@@ -1093,20 +1053,378 @@ void CFileTransferDlg::OnNMDblclkLstTargethostFilelist(NMHDR *pNMHDR,
 
 void CFileTransferDlg::OnClose()
 {
-    CDialogEx::OnClose();
+    ShowWindow(SW_HIDE);
+    //CDialogEx::OnClose();
+    //FreeResource();
+}
+
+BOOL CFileTransferDlg::WaitRecvFileEvent()
+{
+#ifdef DEBUG
+    DWORD dwError = -1;
+    CString csErrorMessage;
+#endif // DEBUG
+
+    BOOL bRet = FALSE;
+    DWORD dwRet = WaitForSingleObject(m_pevtHadFiletoReceive->m_hObject, 
+                                      INFINITE);
+    if (WAIT_OBJECT_0 == dwRet)
+    {
+        bRet = TRUE;
+#ifdef DEBUG
+        OutputDebugStringWithInfo(_T("Has file event had signaled\r\n"), 
+                                  __FILET__, 
+                                  __LINE__);
+#endif // DEBUG
+    }
+
+    return bRet;
+} //! CFileTransferDlg::WaitRecvFileEvent() END
+
+//******************************************************************************
+// Author:              Hoffman
+// Create Time:         2018-11-XX
+// Logical Descrition:  
+//      Get task info depend on the task id, then send pause info to target
+//      host if the task had paused.
+//******************************************************************************
+afx_msg LRESULT CFileTransferDlg::OnHasfiledata(WPARAM wParam, LPARAM lParam)
+{
+    // Throw the file data to queue.
+    PFILEDATAINQUEUE pstFileData = (PFILEDATAINQUEUE)wParam;
+    PFILETRANSPORTTASK pstTask = NULL;
+    PCLIENTINFO pstClientInfo = (PCLIENTINFO)lParam;
+    BOOL bRet = FALSE;
+
+    do
+    {
+        // Get and check the task.
+        pstTask = m_TransportTaskManager.GetTask(pstFileData->ulTaskId_);
+
+        pstTask->syncCriticalSection_.Lock();
+        if (FTS_PAUSE == pstTask->eTaskStatus_)
+        {
+
+            bRet = SendDataUseIOCP(pstClientInfo,
+                                   m_ref_IOCP,
+                                   pstFileData->phFileNameWithPath_,
+                                   PT_FILECOMMAND_PAUSE);
+            if (!bRet)
+            {
+#ifdef DEBUG
+                OutputDebugStringWithInfo(
+                    _T("PT_FILECOMMAND_PAUSE send failed.\r\n"),
+                    __FILET__,
+                    __LINE__);
+#endif // DEBUG
+
+            }
+            break;
+        }
+        pstTask->syncCriticalSection_.Unlock();
+
+        m_TransportTaskManager.InsertFileDataToQueue(pstFileData);
+        m_pevtHadFiletoReceive->SetEvent();
+    } while (FALSE);
+
+    return 0;
+} //! CFileTransferDlg::OnHasfiledata() END
+
+// Deal with WM_FILEDLGUPDATE message.
+afx_msg LRESULT CFileTransferDlg::OnFiledlgupdate(WPARAM wParam, LPARAM lParam)
+{
+#ifdef DEBUG
+    DWORD dwError = -1;
+    CString csErrorMessage;
+    DWORD dwLine = 0;
+    BOOL bOutputErrMsg = FALSE;
+#endif // DEBUG
+    BOOL bNoError = FALSE;
+
+    do
+    {
+        // Analysis parament.
+        PFILETRANSPORTTASK pstTaskInfo = (PFILETRANSPORTTASK)wParam;
+
+        if (NULL == pstTaskInfo)
+        {
+#ifdef DEBUG
+            OutputDebugStringWithInfo(_T("The task point is null.\r\n"),
+                                      __FILET__,
+                                      __LINE__);
+#endif // DEBUG
+            break;
+        }
+
+        FILEDLGUPDATETYPE eUpdateType = (FILEDLGUPDATETYPE)lParam;
+
+        // Get index.
+        int iIdx = 0;
+        while (iIdx < m_lstTransferTaskList.GetItemCount())
+        {
+            if (pstTaskInfo->pathFileNameWithPathDst_.m_strPath ==
+                m_lstTransferTaskList.GetItemText(
+                    iIdx,
+                    FTLC_DSTFILE))
+            {
+                break;
+            }
+
+            ++iIdx;
+        }
+
+        switch (eUpdateType)
+        {
+            case FDUT_TASKINFO:
+            {
+                // Update the already transmitted size.
+                CString csTransmittedSize;
+                _ui64tot(pstTaskInfo->ullTransmissionSize_,
+                         csTransmittedSize.GetBufferSetLength(MAXBYTE),
+                         10);
+                csTransmittedSize.ReleaseBuffer();
+                bNoError = 
+                    m_lstTransferTaskList.SetItemText(iIdx,
+                                                      FTLC_TRANSMITTEDSIZE,
+                                                      csTransmittedSize);
+                if (!bNoError)
+                {
+#ifdef DEBUG
+                    OutputDebugStringWithInfo(_T("Modify transmitted size "
+                                                 "falied.\r\n"),
+                                              __FILET__,
+                                              __LINE__);
+#endif // DEBUG
+                }
+
+                if (pstTaskInfo->ullFileTotalSize_ ==
+                    pstTaskInfo->ullTransmissionSize_)
+                {
+                    pstTaskInfo->eTaskStatus_ = FTS_FINISH;
+                }
+
+                // Update the status of task.
+                bNoError =
+                    m_lstTransferTaskList.SetItemText(
+                        iIdx,
+                        FTLC_TASKSTATUS,
+                        m_acsTaskStatus[pstTaskInfo->eTaskStatus_]);
+                if (!bNoError)
+                {
+#ifdef DEBUG
+                    dwLine = __LINE__;
+                    bOutputErrMsg = TRUE;
+#endif // DEBUG
+                }
+
+                break;
+            } //! case "FDUT_TASKINFO" END
+            case FDUT_ERROR:
+            {
+                bNoError =
+                    m_lstTransferTaskList.SetItemText(
+                        iIdx,
+                        FTLC_TASKSTATUS,
+                        m_acsTaskStatus[pstTaskInfo->eTaskStatus_]);
+                if (bNoError)
+                {
+#ifdef DEBUG
+                    dwLine = __LINE__;
+                    bOutputErrMsg = TRUE;
+#endif // DEBUG
+                }
+
+                break;
+            }
+            default:
+            {
+                break;
+            }
+        }
+    } while (FALSE);
+
+#ifdef DEBUG
+    if (bOutputErrMsg && 0 != dwLine)
+    {
+        dwError = GetLastError();
+        GetErrorMessage(dwError, csErrorMessage);
+        OutputDebugStringWithInfo(csErrorMessage, __FILET__, dwLine);
+    }
+#endif // DEBUG
+
+    UpdateData();
+    return 0;
+} //! CFileTransferDlg::OnFiledlgupdate END
+
+void CFileTransferDlg::OnDestroy()
+{
+    CDialogEx::OnDestroy();
+
     FreeResource();
 }
 
 
-afx_msg LRESULT CFileTransferDlg::OnHasfiledata(WPARAM wParam, LPARAM lParam)
+//******************************************************************************
+// Author:              Hoffman
+// Create Time:         2018-11-27
+// Logical Descrition:  
+//      First check it has items are selected or not, modify the menu style by
+//      this check result.
+//      Finally, pop the memu.
+//******************************************************************************
+void CFileTransferDlg::OnNMRClickLstTransfertask(NMHDR *pNMHDR,
+                                                 LRESULT *pResult)
 {
-    //Throw the file data to queue.
-    PFILEDATAINQUEUE pstFileData = (PFILEDATAINQUEUE)wParam;
+#ifdef DEBUG
+    DWORD dwError = -1;
+    CString csErrorMessage;
+    DWORD dwLine = 0;
+    BOOL bOutputErrMsg = FALSE;
+#endif // DEBUG
+    LPNMITEMACTIVATE pNMItemActivate = 
+        reinterpret_cast<LPNMITEMACTIVATE>(pNMHDR);
+    BOOL bRet = FALSE;
+    
+    do
+    {
+        // Check here need to get memu or not.
+        if (NULL == m_apMenu[FTDMT_TRANSPORT_TASK_LIST_RBTNDOWN])
+        {
+            m_apMenu[FTDMT_TRANSPORT_TASK_LIST_RBTNDOWN] =
+                new CMenu();
+            if (NULL == m_apMenu[FTDMT_TRANSPORT_TASK_LIST_RBTNDOWN])
+            {
+#ifdef DEBUG
+                bOutputErrMsg = TRUE;
+                dwLine = __LINE__;
+#endif // DEBUG
+                break;
+            }
 
-    m_CriticalSection.Lock();
-    m_queFileData.push(*pstFileData);
-    m_CriticalSection.Unlock();
+            m_apMenu[FTDMT_TRANSPORT_TASK_LIST_RBTNDOWN]->
+                LoadMenu(IDR_MENU_TRANSPORTLIST_RBTNDOWN);
+        } //! if "Check here need to get memu or not" END
 
-    m_pevtHadFiletoReceive->SetEvent();
-    return 0;
-} //! CFileTransferDlg::OnHasfiledata END
+        // Get selected Item.
+        POSITION posI = m_lstTransferTaskList.GetFirstSelectedItemPosition();
+
+        // Menu type is "has selected item" default.
+        TRANSPORTTASKLISTMENUTYPE eTransportTaskListMenuType = 
+            TTLMT_HASSELECTEDITEM;
+
+        // No item had selected.
+        if (NULL == posI)
+        {
+            eTransportTaskListMenuType = TTLMT_NOSELECTEDITEM;
+
+        } 
+
+        if (NULL == m_apTransportListMenu[eTransportTaskListMenuType])
+        {
+            m_apTransportListMenu[eTransportTaskListMenuType] =
+                m_apMenu[FTDMT_TRANSPORT_TASK_LIST_RBTNDOWN]->
+                GetSubMenu(eTransportTaskListMenuType);
+            if (NULL == m_apTransportListMenu[eTransportTaskListMenuType])
+            {
+#ifdef DEBUG
+                bOutputErrMsg = TRUE;
+                dwLine = __LINE__;
+#endif // DEBUG
+                break;
+            }
+        }
+
+        CPoint CursorPos;
+        GetCursorPos(&CursorPos);
+
+        bRet =
+            m_apTransportListMenu[eTransportTaskListMenuType]->
+            TrackPopupMenu(TPM_RIGHTBUTTON, CursorPos.x, CursorPos.y, this);
+        if (!bRet)
+        {
+#ifdef DEBUG
+            bOutputErrMsg = TRUE;
+            dwLine = __LINE__;
+#endif // DEBUG
+            break;
+        }
+
+        m_apTransportListMenu[eTransportTaskListMenuType] = NULL;
+    } while (FALSE);
+
+#ifdef DEBUG
+    if (bOutputErrMsg && 0 != dwLine)
+    {
+        dwError = GetLastError();
+        GetErrorMessage(dwError, csErrorMessage);
+        OutputDebugStringWithInfo(csErrorMessage, __FILET__, dwLine);
+    }
+#endif // DEBUG 
+
+    *pResult = 0;
+} //! CFileTransferDlg::OnNMRClickLstTransfertask() END
+
+
+//void CFileTransferDlg::OnTransportMnPauseselectedtask()
+//{
+//#ifdef DEBUG
+//    DWORD dwError = -1;
+//    CString csErrorMessage;
+//    DWORD dwLine = 0;
+//    BOOL bOutputErrMsg = FALSE;
+//#endif // DEBUG
+//    PFILETRANSPORTTASK pstTaskInfo = NULL;
+//    BOOL bRet = FALSE;
+//
+//    do
+//    {
+//        POSITION posI = m_lstTransferTaskList.GetFirstSelectedItemPosition();
+//        // Has selected items.
+//        if (NULL != posI)
+//        {
+//            do
+//            {
+//                int iItemIndex =
+//                    m_lstTransferTaskList.GetNextSelectedItem(posI);
+//
+//                // Get task id.
+//                ULONG ulTaskId = m_lstTransferTaskList.GetItemData(iItemIndex);
+//
+//                // Get task info by id.
+//                pstTaskInfo = m_TransportTaskManager.GetTask(ulTaskId);
+//                if (NULL == pstTaskInfo)
+//                {
+//#ifdef DEBUG
+//                    OutputDebugStringWithInfo(
+//                        _T("The task info point is NULL.\r\n"),
+//                        __FILET__,
+//                        __LINE__);
+//#endif // DEBUG
+//                    continue;
+//                }
+//
+//                // Change task status.
+//                pstTaskInfo->syncCriticalSection_.Lock();
+//                pstTaskInfo->eTaskStatus_ = FTS_PAUSE;
+//                pstTaskInfo->syncCriticalSection_.Unlock();
+//
+//                // Change UI.
+//                bRet = m_lstServerFileList.SetItemText(iItemIndex,
+//                                                FTLC_TASKSTATUS,
+//                                                m_acsTaskStatus[FTS_PAUSE]);
+//                if (!bRet)
+//                {
+//#ifdef DEBUG
+//                    dwError = GetLastError();
+//                    GetErrorMessage(dwError, csErrorMessage);
+//                    OutputDebugStringWithInfo(csErrorMessage,
+//                                              __FILET__,
+//                                              __LINE__);
+//#endif // DEBUG 
+//                }
+//
+//            } while (NULL != posI);
+//        } //! if "Has selected items" END 
+//    } while (FALSE);
+//
+//} //! CFileTransferDlg::OnTransportMnPauseselectedtask() END

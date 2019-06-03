@@ -1,3 +1,32 @@
+//******************************************************************************
+// License:     MIT
+// Author:      Hoffman
+// Create Time: 2018-11-01
+// Description: 
+//      The achieve of class CRecvFileDataThread's member methods.
+//
+// Modify Log:
+//      2018-11-01    Hoffman
+//      Info: a. Add achieve of below member method.
+//              a.1. OnThreadEventRun();
+//
+//      2018-11-13    Hoffman
+//      Info: a. Modify ahcieve of below member method.
+//              a.1. OnThreadEventRun(): 
+//                  a.1.1. Remove for check destination exist or not.
+//
+//      2018-11-14    Hoffman
+//      Info: a. Modify achieve of below member methods.
+//              a.1. OnThreadEventRun(): 
+//                  a.1.1. Modify deal with it had occured error.
+//
+//      2018-12-18    Hoffman
+//      Info: a. Modify below member method.
+//              a.1. OnThreadEventRun():  
+//                  a.1.1. Add bHasError flag to check it needs to send messaege
+//                         to FileTransportDlg or not.
+//******************************************************************************
+
 #include "stdafx.h"
 #include "FileTransferDlg.h"
 #include "RecvFileDataThread.h"
@@ -17,50 +46,55 @@ bool CRecvFileDataThread::OnThreadEventRun(LPVOID lpParam)
 #ifdef DEBUG
     DWORD dwError = -1;
     CString csErrorMessage;
+    DWORD dwLine = 0;
+    BOOL bOutputErrMsg = FALSE;
 #endif // DEBUG
-
     // Analysis parament.
     CFileTransferDlg *pFileTransferDlg = (CFileTransferDlg *)lpParam;
 
+    BOOL bRet = FALSE;
+    BOOL bHasError = FALSE;
     // Work start.
     while (TRUE)
     {
-        // Quit loop when the file transport dialog begin to destroy.
-        if (pFileTransferDlg->CheckProcessQuitFlag())
+        // Wait work event.
+        // Quit loop when the file transport dialog begin to destroy or 
+        // wait event failed.
+        if (!pFileTransferDlg->WaitRecvFileEvent() 
+            || pFileTransferDlg->CheckProcessQuitFlag())
         {
-            break;
+            return true;
         }
 
-        // Give up currently time when the queue of file data is empty.
-        if (pFileTransferDlg->CheckFileDataQueueEmpty())
+        // Give up this chance if queue is empty.
+        if (pFileTransferDlg->m_TransportTaskManager.CheckFileDataQueueEmpty())
         {
-            // Loop if event isn't signaled.
-            if (!pFileTransferDlg->WaitRecvFileEvent())
-            {
-                continue;
-            }
+            continue;
         }
 
+        BOOL bNoError = FALSE;
+        PFILEDATAINQUEUE pstFileData = NULL;
+        PFILETRANSPORTTASK pstTargetTask = NULL;
         // Deal with file data.
         do
         {
-            FILEDATAINQUEUE stFileData = 
-                pFileTransferDlg->GetFileDataFromQueue();
-            if (0 == stFileData.FileDataBuffer_.GetBufferLen())
+            pstFileData = 
+                pFileTransferDlg->m_TransportTaskManager.GetFileDataFromQueue();
+            if (0 == pstFileData->FileDataBuffer_.GetBufferLen())
             {
 #ifdef DEBUG
                 OutputDebugStringWithInfo(_T("The file data is empty.\r\n"),
                                           __FILET__,
                                           __LINE__);
 #endif // DEBUG
+                bHasError = TRUE;
                 break;
             }
 
             // Get currently file transport task.
-            PFILETRANSPORTTASK pstTargetTask = NULL;
             pstTargetTask = 
                 pFileTransferDlg->m_TransportTaskManager.GetTask(
-                    stFileData.csFileFullName_);
+                    pstFileData->ulTaskId_);
             if (NULL == pstTargetTask)
             {
 #ifdef DEBUG
@@ -69,109 +103,158 @@ bool CRecvFileDataThread::OnThreadEventRun(LPVOID lpParam)
                                           __FILET__,
                                           __LINE__);
 #endif // DEBUG
+                bHasError = TRUE;
                 break;
             }
             
-            // Check file exist or not.
-            DWORD dwIndex = 1;
+            // Get file object corresponded task.
+            CFile *pfTargetFile = NULL;
+            HANDLE hTargetFile = INVALID_HANDLE_VALUE;
             do
             {
-                HANDLE hFileTest = CreateFile(stFileData.csFileFullName_,
-                                              GENERIC_READ,
-                                              NULL,
-                                              NULL,
-                                              OPEN_EXISTING,
-                                              FILE_ATTRIBUTE_NORMAL,
-                                              NULL);
-                dwError = GetLastError();
-                if (ERROR_FILE_NOT_FOUND == dwError)
+                pfTargetFile =
+                    pFileTransferDlg->m_TransportTaskManager.GetFileObject(
+                        pstTargetTask->pathFileNameWithPathDst_);
+                if (NULL != pfTargetFile)
                 {
+                    // Get successfully, jump out.
                     break;
                 }
-                // File had existed.
-                else
+
+
+                // Open the file.
+                hTargetFile = CreateFile(pstTargetTask->pathFileNameWithPathDst_,
+                                         GENERIC_WRITE,
+                                         NULL,
+                                         NULL,
+                                         OPEN_ALWAYS,
+                                         FILE_ATTRIBUTE_NORMAL,
+                                         NULL);
+                if (INVALID_HANDLE_VALUE == hTargetFile)
                 {
-                    // Jump out The task is working or had had new file name.
-                    if (FTS_TRANSPORTING == pstTargetTask->eTaskStatus_)
-                    {
-                        if (pstTargetTask->bHasNewFileName_)
-                        {
-                            stFileData.csFileFullName_ =
-                                pstTargetTask->csFilePath_ +
-                                pstTargetTask->csFileNewName_;
-                        }
-                        break;
-                    }
+#ifdef DEBUG
+                    dwLine = __LINE__;
+                    bOutputErrMsg = TRUE;
+#endif // DEBUG
+                    break;
+                }
 
-                    // split the name from full name.
-                    CString csAddInfo;
-                    CString csFileName;
-                    CString csFileExt;
-                    _tsplitpath(stFileData.csFileFullName_.GetString(), 
-                                NULL,
-                                NULL,
-                                csFileName.GetBufferSetLength(MAX_PATH),
-                                csFileExt.GetBufferSetLength(MAX_PATH));
-                    csFileName.ReleaseBuffer();
-                    csFileExt.ReleaseBuffer();
+                //******************************************************** 
+                //* Alarm * This memory will free when delete the task
+                //          or the file transport dialog will be destroyed.
+                //******************************************************** 
+                pfTargetFile = new CFile(hTargetFile);
+                if (NULL == pfTargetFile)
+                {
+#ifdef DEBUG
+                    dwLine = __LINE__;
+                    bOutputErrMsg = TRUE;
+#endif // DEBUG
+                    break;
+                }
 
-                    // Combination new name.
-                    csAddInfo.Format(_T("(%u)"), dwIndex);
-                    csFileName += csAddInfo;
-                    
-                    // Update task info.
-                    pstTargetTask->csFileNewName_ = csFileName + csFileExt;
-                    pstTargetTask->bHasNewFileName_ = TRUE;
+                // Add this file object into file transport manager.
+                pFileTransferDlg->m_TransportTaskManager.InsertFileObject(
+                    pstTargetTask->pathFileNameWithPathDst_,
+                    pfTargetFile);
 
-                    // Modify the file name.
-                    stFileData.csFileFullName_ =
-                        pstTargetTask->csFilePath_ + 
-                        pstTargetTask->csFileNewName_;
-                } // else "File had existed" END
+            } while (FALSE); //! while "Get file object corresponded task" END
 
-                CloseHandle(hFileTest);
-            } while (TRUE); //! while "Check file exist or not" END
+            // Get file object had failed.
+            if (NULL == pfTargetFile)
+            {
+                if (INVALID_HANDLE_VALUE != hTargetFile)
+                {
+                    CloseHandle(hTargetFile);
+                }
+
+                // Jmp
+                bHasError = TRUE;
+                break;
+            }
 
             // Change the task state.
             pstTargetTask->eTaskStatus_ = FTS_TRANSPORTING;
             
-            // Open the file.
-            HANDLE hTargetFile = CreateFile(stFileData.csFileFullName_,
-                                            GENERIC_WRITE, 
-                                            NULL,
-                                            NULL,
-                                            OPEN_ALWAYS,
-                                            FILE_ATTRIBUTE_NORMAL,
-                                            NULL);
-            if (INVALID_HANDLE_VALUE == hTargetFile)
-            {
-#ifdef DEBUG
-                dwError = GetLastError();
-                GetErrorMessage(dwError, csErrorMessage);
-                OutputDebugStringWithInfo(csErrorMessage, __FILET__, __LINE__);
-#endif // DEBU
-                break;
-            }
-
-            CFile fTargetFile(hTargetFile);
             // Seek point position.
-            fTargetFile.Seek(pstTargetTask->ullTransmissionSize_, CFile::begin);
+            pfTargetFile->Seek(pstTargetTask->ullTransmissionSize_,
+                               CFile::begin);
             
             // Write to data.
-            fTargetFile.Write(stFileData.FileDataBuffer_.GetBuffer(), 
-                              stFileData.FileDataBuffer_.GetBufferLen());
+            pfTargetFile->Write(pstFileData->FileDataBuffer_.GetBuffer(), 
+                                pstFileData->FileDataBuffer_.GetBufferLen());
             
             // Update info of this task.
-            pstTargetTask->ullTransmissionSize_ = stFileData.ullFilePointPos_;
+            pstTargetTask->ullTransmissionSize_ = pstFileData->ullFilePointPos_;
 
             // Notify the file transport to update UI.
-            
+            pFileTransferDlg->SendMessage(WM_FILEDLGUPDATE, 
+                                          (WPARAM)pstTargetTask,
+                                          FDUT_TASKINFO);
 
-            // Close the file.
-            fTargetFile.Close();
+            // Free the memory of file data.
+            if (NULL != pstFileData)
+            {
+                delete pstFileData;
+                pstFileData = NULL;
+            }
+
+            // Delete the had finished task.
+            if (pstTargetTask->ullTransmissionSize_ ==
+                pstTargetTask->ullFileTotalSize_)
+            {
+#ifdef DEBUG
+                OutputDebugStringWithInfo(_T("File transport successful!\r\n"),
+                                          __FILET__,
+                                          __LINE__);
+#endif // DEBUG
+
+                bRet = pFileTransferDlg->
+                    m_TransportTaskManager.DeleteTaskAndFileObject(
+                        pstTargetTask->pathFileNameWithPathDst_);
+#ifdef DEBUG
+                if (!bRet)
+                {
+                    OutputDebugStringWithInfo(_T("Delete task failed.\r\n"),
+                                              __FILET__,
+                                              __LINE__);
+                }
+#endif // DEBUG
+                pstTargetTask = NULL;
+            }
         } while (FALSE); // while "Deal with file data" END
 
+#ifdef DEBUG
+        if (bOutputErrMsg && 0 != dwLine)
+        {
+            dwError = GetLastError();
+            GetErrorMessage(dwError, csErrorMessage);
+            OutputDebugStringWithInfo(csErrorMessage, __FILET__, dwLine);
+            
+            bOutputErrMsg = FALSE;
+            dwLine = 0;
+        }
+#endif // DEBUG
+
+        // Notify the file transport dialog to update UI 
+        // the task had occured error.
+        if (bHasError)
+        {
+            if (NULL != pstTargetTask)
+            {
+                pstTargetTask->eTaskStatus_ = FTS_ERROR;
+                pFileTransferDlg->SendMessage(WM_FILEDLGUPDATE,
+                                              (WPARAM)pstTargetTask,
+                                              FDUT_ERROR);
+            }
+        }    
     } //! while "Work start" END
+
+#ifdef DEBUG
+    OutputDebugStringWithInfo(_T("The receive file data thread quit.\r\n"),
+                              __FILET__,
+                              __LINE__);
+#endif // DEBUG
 
     return true;
 } //! CRecvFileDataThread::OnThreadEventRun END 

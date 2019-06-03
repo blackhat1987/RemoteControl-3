@@ -1,3 +1,25 @@
+//******************************************************************************
+// License:     MIT
+// Author:      Hoffman
+// Create Time: 2018-07-24
+// Description: 
+//      The functinos achieve for deal with package from target host.
+//
+// Modify Log:
+//      2018-07-24    Hoffman
+//      Info: Add below functions.
+//              OnHeartBeat();
+//              OnHandlePacket();
+//              
+//      2018-11-22    Hoffman
+//      Info: Modify below functions.
+//              OnCMDReply(): 
+//                  1. Add check for cmd dialog point.
+//              OnHandlePacket(): 
+//                  1. Modify some debug info output.
+//              
+//******************************************************************************
+
 #include "stdafx.h"
 #include "StructShare.h"
 #include "FileTransferDlg.h"
@@ -12,27 +34,6 @@ BOOL OnHeartBeat(SOCKET sctTargetSocket,
                  PCLIENTINFO pstClientInfo,
                  CCommunicationIOCP &IOCP)
 {
-    //PPACKETFORMAT pstPacket = (PPACKETFORMAT)pstClientInfo->szSendTmpBuffer_;
-
-    //// *注意* 写入数据时要加锁
-    //pstClientInfo->CriticalSection_.Lock();
-    //pstPacket->ePacketType_ = PT_HEARTBEAT;
-    //pstPacket->dwSize_ = 0;
-
-    //pstClientInfo->SendBuffer_.Write((PBYTE)pstClientInfo->szSendTmpBuffer_,
-    //                                 PACKET_HEADER_SIZE + pstPacket->dwSize_);
-    //// 清空临时发送区
-    //memset(pstClientInfo->szSendTmpBuffer_,
-    //       0,
-    //       PACKET_HEADER_SIZE + pstPacket->dwSize_);
-
-    //// 投递发送请求
-    //BOOL bRet = IOCP.PostSendRequst(sctTargetSocket,
-    //                                pstClientInfo->SendBuffer_);
-
-    //pstClientInfo->SendBuffer_.ClearBuffer();
-    //pstClientInfo->CriticalSection_.Unlock();
-
     CString csTmpData;
     BOOL bRet = SendDataUseIOCP(pstClientInfo, IOCP, csTmpData, PT_HEARTBEAT);
 
@@ -45,13 +46,13 @@ BOOL OnFileList(SOCKET sctTargetSocket,
                 PCLIENTINFO pstClientInfo,
                 CCommunicationIOCP &IOCP)
 {
-    pstClientInfo->pFileTransferDlg_->m_csFileList.Empty();
+    pstClientInfo->pFileTransferDlg_->m_csTargetHostFileList.Empty();
 
     memmove(pstClientInfo->pFileTransferDlg_->
-            m_csFileList.GetBufferSetLength(PACKET_CONTENT_MAXSIZE),
+            m_csTargetHostFileList.GetBufferSetLength(PACKET_CONTENT_MAXSIZE),
             szBuffer,
             uiLen);
-    pstClientInfo->pFileTransferDlg_->m_csFileList.ReleaseBuffer();
+    pstClientInfo->pFileTransferDlg_->m_csTargetHostFileList.ReleaseBuffer();
     // 清空接收临时缓冲区
     memset(szBuffer, 0, uiLen);
 
@@ -66,16 +67,16 @@ BOOL OnFileDevice(SOCKET sctTargetSocket,
                   PCLIENTINFO pstClientInfo,
                   CCommunicationIOCP &IOCP)
 {
-    pstClientInfo->pFileTransferDlg_->m_csTargetHostDevice.Empty();
+    pstClientInfo->pFileTransferDlg_->m_csTargetHostDriverList.Empty();
     // 将数据传给文件传输对话框
-    pstClientInfo->pFileTransferDlg_->m_uiTargetHostDeviceLen = uiLen;
+    pstClientInfo->pFileTransferDlg_->m_uiTargetHostDriverLen = uiLen;
     memmove(pstClientInfo->pFileTransferDlg_->
-            m_csTargetHostDevice.GetBufferSetLength(PACKET_CONTENT_MAXSIZE),
+            m_csTargetHostDriverList.GetBufferSetLength(PACKET_CONTENT_MAXSIZE),
             szBuffer,
             uiLen);
 
     pstClientInfo->pFileTransferDlg_->
-        m_csTargetHostDevice.ReleaseBuffer();
+        m_csTargetHostDriverList.ReleaseBuffer();
 
     // Clear temp buffer receive.
     memset(szBuffer, 0, uiLen);
@@ -93,14 +94,18 @@ BOOL OnFileData(SOCKET sctTargetSocket,
                 CCommunicationIOCP &IOCP)
 {
     CString csFileData;
-    FILEDATAINQUEUE stFileData = { 0 };
+    //***********************************************************
+    //* Alarm * This memory will free when this data have been writeen.
+    //***********************************************************
+    FILEDATAINQUEUE *pstFileData = new FILEDATAINQUEUE;
 
     // Get file name and postion.
-    stFileData.csFileFullName_ = ref_stHeader.szFileFullName_;
-    stFileData.ullFilePointPos_ = ref_stHeader.ullFilePointPos_;
+    pstFileData->phFileNameWithPath_ = ref_stHeader.szFileFullName_;
+    pstFileData->ullFilePointPos_ = ref_stHeader.ullFilePointPos_;
+    pstFileData->ulTaskId_ = ref_stHeader.ulTaskId_;
 
     // Wirte file data to buffer object.
-    stFileData.FileDataBuffer_.Write((PBYTE)szBuffer, ref_stHeader.dwSize_);
+    pstFileData->FileDataBuffer_.Write((PBYTE)szBuffer, ref_stHeader.dwSize_);
 
     // Clear temp buffer receive.
     memset(szBuffer, 0, ref_stHeader.dwSize_);
@@ -108,7 +113,7 @@ BOOL OnFileData(SOCKET sctTargetSocket,
     // Put file data into queue that FileTransfer do it.
     BOOL bRet = FALSE;
     bRet = pstClientInfo->pFileTransferDlg_->SendMessage(WM_HASFILEDATA, 
-                                                         (WPARAM)&stFileData, 
+                                                         (WPARAM)pstFileData, 
                                                          0);
 
     return bRet;
@@ -126,12 +131,14 @@ BOOL OnCMDReply(SOCKET sctTargetSocket,
 
     memset(szBuffer, 0, uiLen);
 
-    BOOL bRet = 
+    if (NULL != pstClintInfo->pCmdDlg_)
+    {
         pstClintInfo->pCmdDlg_->SendMessage(WM_HASCMDREPLY,
                                             (WPARAM)&csCmdReply,
                                             0);
+    }
 
-    return bRet;
+    return TRUE;
 }
 
 // Deal with the info from target host.
@@ -274,7 +281,7 @@ BOOL OnHandlePacket(PACKETTYPE ePacketType,
             {
 #ifdef DEBUG
                 OutputDebugStringWithInfo(_T("Recive the GETFILE data "
-                                             "from target host"),
+                                             "from target host.\r\n"),
                                           __FILET__,
                                           __LINE__);
 #endif // DEBUG

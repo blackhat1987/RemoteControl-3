@@ -1,3 +1,28 @@
+//******************************************************************************
+// License:     MIT
+// Author:      Hoffman
+// Create Time: 2018-07-24
+// Description: 
+//      The functions achieve for deal with package from server.
+//
+// Modify Log:
+//      2018-07-24    Hoffman
+//      Info: a. Add below functions.
+//              a.1. OnHandlePacket();
+//
+//      2018-11-22    Hoffman
+//      Info: a. Modify below functions.
+//              a.1. OnCMDOrder(): 
+//                  a.1.1. Add order content check.
+//
+//      2018-11-28    Hoffman
+//      Info: a. Add below functions.
+//              a.1. OnPauseCommand();
+//            b. Modify below functions.
+//              a.1. OnHandlePacket();
+//                  a.1.1. Add code deal with PT_FILECOMMAND_PAUSE;
+//******************************************************************************
+
 #include "stdafx.h"
 #include "CommunicationIOCP.h"
 #include "TeleClientDlg.h"
@@ -13,8 +38,10 @@ BOOL DosPathToNtPath(LPTSTR pszDosPath, LPTSTR pszNtPath)
     INT cchDevName;
 
     //检查参数
-    if(!pszDosPath || !pszNtPath )
+    if (!pszDosPath || !pszNtPath)
+    {
         return FALSE;
+    }
  
     //获取本地磁盘字符串
     if(GetLogicalDriveStrings(sizeof(szDriveStr), szDriveStr))
@@ -183,12 +210,12 @@ BOOL OnFileDevice(SOCKET sctTargetSocket,
                   PCLIENTINFO  pstClientInfo,
                   CCommunicationIOCP &IOCP)
 {
-    // 获取盘符
-    CString csDevice;
+    // Get Driver.
+    CString csDriver;
     DWORD dwRet = 
         GetLogicalDriveStrings(MAXBYTE - 1,
-                               csDevice.GetBufferSetLength(MAXBYTE - 1));
-    csDevice.ReleaseBuffer();
+                               csDriver.GetBufferSetLength(MAXBYTE - 1));
+    csDriver.ReleaseBuffer();
     if (dwRet == 0)
     {
 #ifdef DEBUG
@@ -215,7 +242,7 @@ BOOL OnFileDevice(SOCKET sctTargetSocket,
         pstPacket->dwSize_ = dwRet * sizeof(TCHAR);
 
         memmove(pstPacket->szContent_,
-                csDevice.GetBuffer(),
+                csDriver.GetBuffer(),
                 pstPacket->dwSize_);
     }
     else
@@ -256,14 +283,37 @@ BOOL OnGetFileCommand(SOCKET sctTargetSocket,
     // Clean the temporary buffer of revice.
     memset(szBuffer, 0, uiLen);
 
-    BOOL bRet = pstClientInfo->pTeleClientDlg_->
-        SendMessage(WM_GETFILE, 
-                    (WPARAM)&csFileListToGet,
-                    (LPARAM)pstClientInfo);
+    pstClientInfo->pTeleClientDlg_->SendMessage(WM_GETFILE,
+                                                (WPARAM)&csFileListToGet,
+                                                (LPARAM)pstClientInfo);
 
-    return bRet;
+    return TRUE;
 
 } //! OnGetFileCommand END
+
+BOOL OnPauseCommand(SOCKET sctTargetSocket,
+                    char *szBuffer,
+                    size_t uiLen,
+                    PCLIENTINFO  pstClientInfo,
+                    CCommunicationIOCP &IOCP)
+{
+    // The filename with path in szBuffer.
+    CString csFileNameWithBuffer;
+
+    memmove(csFileNameWithBuffer.GetBufferSetLength(PACKET_CONTENT_MAXSIZE),
+            szBuffer,
+            uiLen);
+    csFileNameWithBuffer.ReleaseBuffer();
+
+    // Clean the temporary buffer of revice.
+    memset(szBuffer, 0, uiLen);
+
+    pstClientInfo->pTeleClientDlg_->SendMessage(WM_TASKPAUSE,
+                                                (WPARAM)&csFileNameWithBuffer,
+                                                (LPARAM)pstClientInfo);
+
+    return TRUE;
+} //! OnPauseCommand() END
 
 BOOL OnCmdCommandStart(PCLIENTINFO  pstClientInfo)
 {
@@ -284,15 +334,18 @@ BOOL OnCmdCommandStart(PCLIENTINFO  pstClientInfo)
                           &pstClientInfo->hServerCmdWritePipe_,
                           &stSa,
                           0);
-        if (bRet == FALSE)
+        if (!bRet)
         {
 #ifdef DEBUG
-            OutputDebugString(_T("管道创建失失败\r\n"));
+            OutputDebugStringWithInfo(_T("Create pipe failed.\r\n"),
+                                      __FILET__,
+                                      __LINE__);
 #endif // DEBUG
+
             break;
         }
 
-        // 启动CMD进程
+        // Start CMD process.
         TCHAR szCmdline[] = _T("cmd.exe");
         STARTUPINFO stSi = { 0 };
         stSi.cb = sizeof(stSi);
@@ -347,11 +400,13 @@ BOOL OnCmdCommandStart(PCLIENTINFO  pstClientInfo)
         CloseHandle(pstClientInfo->hServerCmdReadPipe_);
         pstClientInfo->hServerCmdReadPipe_ = INVALID_HANDLE_VALUE;
     }
+
     if (pstClientInfo->hServerCmdWritePipe_ != INVALID_HANDLE_VALUE)
     {
         CloseHandle(pstClientInfo->hServerCmdWritePipe_);
         pstClientInfo->hServerCmdWritePipe_ = INVALID_HANDLE_VALUE;
     }
+
     if (pstClientInfo->hCmdReadPipe_ != INVALID_HANDLE_VALUE)
     {
         CloseHandle(pstClientInfo->hCmdReadPipe_);
@@ -379,8 +434,11 @@ BOOL OnCMDOrder(SOCKET sctTargetSocket,
             szBuffer,
             uiLen);
     csOrder.ReleaseBuffer();
-    // 清空接收临时缓冲区
-    memset(szBuffer, 0, uiLen);
+
+    if (_T("exit\r\n") != csOrder)
+    {
+        memset(szBuffer, 0, uiLen);
+    }
     
     // 发送消息给主进程有CMD指令要处理
     BOOL bRet = pstClientInfo->pTeleClientDlg_->
@@ -519,14 +577,12 @@ BOOL OnHandlePacket(PACKETTYPE ePacketType,
     {
         case PT_HEARTBEAT:
         {
-            OutputDebugString(_T("收到服务器心跳回复包\r\n"));
             // 清空
             memset(szBuffer, 0, ref_stHeader.dwSize_);
             break;
         }
         case PT_FILE_LIST:
         {
-            OutputDebugString(_T("收到文件列表请求\r\n"));
             bRet = OnFileList(sctTargetSocket,
                               szBuffer,
                               ref_stHeader.dwSize_,
@@ -534,14 +590,12 @@ BOOL OnHandlePacket(PACKETTYPE ePacketType,
                               IOCP);
             if (!bRet)
             {
-                OutputDebugString(_T("文件列表请求处理失败\r\n"));
             }
 
             break;
         }
         case PT_FILE_DEVICE:
         {
-            OutputDebugString(_T("收到盘符请求\r\n"));
             bRet = OnFileDevice(sctTargetSocket,
                                 szBuffer,
                                 ref_stHeader.dwSize_,
@@ -549,7 +603,6 @@ BOOL OnHandlePacket(PACKETTYPE ePacketType,
                                 IOCP);
             if (!bRet)
             {
-                OutputDebugString(_T("盘符请求处理失败\r\n"));
             }
 
             break;
@@ -563,6 +616,15 @@ BOOL OnHandlePacket(PACKETTYPE ePacketType,
                                     IOCP);
             break;
         }
+        case PT_FILECOMMAND_PAUSE:
+        {
+            bRet = OnPauseCommand(sctTargetSocket,
+                                  szBuffer,
+                                  ref_stHeader.dwSize_,
+                                  pstClientInfo,
+                                  IOCP);
+            break;
+        }
         case PT_SCREENPICTURE:
         {
             bRet = OnScreenPictrue(sctTargetSocket,
@@ -572,7 +634,6 @@ BOOL OnHandlePacket(PACKETTYPE ePacketType,
                                    IOCP);
             if (!bRet)
             {
-                OutputDebugString(_T("盘符请求处理失败\r\n"));
             }
             break;
         }
@@ -583,16 +644,21 @@ BOOL OnHandlePacket(PACKETTYPE ePacketType,
                                  ref_stHeader.dwSize_,
                                  pstClientInfo,
                                  IOCP);
-            if (!bRet)
+#ifdef DEBUG
+            if (bRet)
             {
-                OutputDebugString(_T("盘符请求处理失败\r\n"));
+                OutputDebugStringWithInfo(
+                    _T("Deal with PT_PROCESS_INFO over.\r\n"),
+                    __FILET__,
+                    __LINE__);
             }
+#endif // DEBUG
+
             break;
         }
         case PT_PROCESSCOMMAND_KILL:
         {
 #ifdef DEBUG
-            OutputDebugString(_T("收到kill进程的命令\r\n"));
 #endif // DEBUG
             bRet = OnProcessCommandKill(sctTargetSocket,
                                         szBuffer,
@@ -601,26 +667,26 @@ BOOL OnHandlePacket(PACKETTYPE ePacketType,
                                         IOCP);
             if (!bRet)
             {
-                OutputDebugString(_T("盘符请求处理失败\r\n"));
             }
         }
         case PT_CMDCOMMAND_END:
         {
 #ifdef DEBUG
-            OutputDebugStringWithInfo(_T("Get cmd command end."),
+            OutputDebugStringWithInfo(_T("Get cmd command end.\r\n"),
                                       __FILET__,
                                       __LINE__);
 #endif // DEBUG
             TCHAR *szEndOrder = _T("exit\r\n");
             bRet = OnCMDOrder(sctTargetSocket,
                               (char *)szEndOrder,
-                              ref_stHeader.dwSize_,
+                              (_tcslen(szEndOrder) + 1) * sizeof(TCHAR),
                               pstClientInfo,
                               IOCP);
             if (!bRet)
             {
 #ifdef DEBUG
-            OutputDebugStringWithInfo(_T("Deal with cmd command end failed."),
+            OutputDebugStringWithInfo(_T("Deal with cmd command"
+                                         "end failed.\r\n"),
                                       __FILET__,
                                       __LINE__);
 #endif // DEBUG
@@ -630,17 +696,26 @@ BOOL OnHandlePacket(PACKETTYPE ePacketType,
         }
         case PT_CMDCOMMAND_START:
         {
-            OutputDebugString(_T("收到启动CMD的命令\r\n"));
             bRet = OnCmdCommandStart(pstClientInfo);
             if (!bRet)
             {
-                OutputDebugString(_T("启动CMD失败\r\n"));
+#ifdef DEBUG
+                OutputDebugStringWithInfo(_T("Start CMD failed.\r\n"),
+                                          __FILET__,
+                                          __LINE__);
+#endif // DEBUG
+
             }
             break;
         }
         case PT_CMD_ORDER:
         {
-            OutputDebugString(_T("收到CMD指令\r\n"));
+#ifdef DEBUG
+            OutputDebugStringWithInfo(_T("Recieve CMD order.\r\n"),
+                                      __FILET__,
+                                      __LINE__);
+#endif // DEBUG
+
             bRet = OnCMDOrder(sctTargetSocket,
                               szBuffer,
                               ref_stHeader.dwSize_,
@@ -648,13 +723,11 @@ BOOL OnHandlePacket(PACKETTYPE ePacketType,
                               IOCP);
             if (!bRet)
             {
-                OutputDebugString(_T("CMD指令处理失败\r\n"));
             }
             break;
         }
         default:
         {
-            OutputDebugString(_T("数据包类型不在处理范围内\r\n"));
             break;
         }
     } //! switch "Packet's type" END

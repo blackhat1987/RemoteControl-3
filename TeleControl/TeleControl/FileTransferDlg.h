@@ -1,3 +1,24 @@
+//******************************************************************************
+// License:     MIT
+// Author:      Hoffman
+// Create Time: 2018-07-24
+// Description: 
+//      The define for class CFileTransforDlg.
+//
+// Modify Log:
+//      2018-11-13    Hoffman
+//      Info: a. Add below member variable.
+//              a.1. m_ullNextTaskId;
+//
+//      2018-11-14    Hoffman
+//      Info: a. Add below member variable.
+//              a.1. m_adwStyle;
+//
+//      2018-11-27    Hoffman
+//      Info: a. Add below member variable.
+//              a.1. m_apMenu;
+//******************************************************************************
+
 #pragma once
 #include "afxwin.h"
 #include "afxcmn.h"
@@ -5,13 +26,13 @@
 #include "StructShare.h"
 #include "FileTransportManager.h"
 #include "RecvFileDataThread.h"
+#include "FileTransferTaskListCtrl.h"
 
 // CFileTransferDlg 对话框
-
+typedef void (CFileTransferDlg::*PFNC_CLICKBTNSKIP)();
 class CFileTransferDlg : public CDialogEx
 {
     DECLARE_DYNAMIC(CFileTransferDlg)
-
 public:
     CFileTransferDlg(CString &ref_csIPAndPort,
                      PCLIENTINFO pstClientInfo,
@@ -34,31 +55,55 @@ private:
     CString &m_ref_csIPAndPort;
     // Client context.
     PCLIENTINFO m_pstClientInfo = NULL;
-    // The queue of data from target host.
-    std::queue<FILEDATAINQUEUE> m_queFileData;
+
+    // The id for next task.
+    ULONG m_ulNextTaskId = 0;
+
     // Thread recevie file data.
     CRecvFileDataThread *m_pthdRecvFileData = NULL;
     BOOL m_bProcessQuit = FALSE;
     CCriticalSection m_CriticalSection;
     CEvent *m_pevtHadFiletoReceive = NULL;
 
+    CMenu *m_apMenu[TOTAL_FTDMT_NUM] = { NULL };
+    CMenu *m_apTransportListMenu[TOTAL_TTLMT_NUM] = { NULL };
     const CString m_acsTaskType[NUM_FILETASKTYPE] = {
         _T("Download"),
         _T("Upload"),
     };
     const CString m_acsTaskStatus[NUM_FILETASKSTATUS] = {
-        _T("Start"),
-        _T("Transporting"),
         _T("Pause"),
+        _T("Transporting..."),
+        _T("Pending"),
+        _T("Error"),
         _T("Finish")
     };
 
+    CPath *m_appathFilePath[NUM_PARTICIPANT] = {
+        &m_pathServerFilePath,
+        &m_pathTartetHostFilePath
+    };
+
+    PFNC_CLICKBTNSKIP m_apfncClickBtnSkip[NUM_PARTICIPANT] = {
+        &CFileTransferDlg::OnBnClickedBtnServerSkip,
+        &CFileTransferDlg::OnBnClickedBtnTargethostSkip
+    };
+
+    CEdit *m_apedtPath[NUM_PARTICIPANT] = {
+        &m_edtServerFilePath,
+        &m_edtTargetHostFilePath
+    };
+
+    DWORD m_adwStyle[4] = {
+        LVS_ICON,
+        LVS_SMALLICON,
+        LVS_LIST,
+        LVS_REPORT,
+    };
     void FreeResource();
     void UpdateTransportList();
 public:
-    void InsertFileDataToQueue(_In_ FILEDATAINQUEUE &ref_stFileData);
-    FILEDATAINQUEUE GetFileDataFromQueue();
-    BOOL CheckFileDataQueueEmpty();
+    
 
 
     BOOL CheckProcessQuitFlag() const
@@ -66,8 +111,8 @@ public:
         return m_bProcessQuit;
     }
     
-    BOOL WaitRecvFileEvent();
 
+    BOOL WaitRecvFileEvent();
 
 protected:
     virtual void DoDataExchange(CDataExchange* pDX);    // DDX/DDV 支持
@@ -83,20 +128,39 @@ public:
     // The sytle of target host's filelist.
     int m_iTargetHostActiveStyleIdx = 0;
     // The driver list of server.
-    CComboBox m_cmbServerDevice;
-    // The file path of server.
+    CComboBox m_cmbServerDriver;
+    // The edit control of server's path.
     CEdit m_edtServerFilePath;
-    // the file list of target host.
-    CString m_csFileList;
-    // 目标端的盘符
-    CString m_csTargetHostDevice;
+    // The path object of server.
+    CPath m_pathServerFilePath;
+    // The file list of target host.
+    CString m_csTargetHostFileList;
+    // The driver list of target host.
+    CString m_csTargetHostDriverList;
     // 目标端的盘符字节数
-    size_t m_uiTargetHostDeviceLen = 0;
+    size_t m_uiTargetHostDriverLen = 0;
 
+    // Server端文件列表风格
+    CComboBox m_cmbServerFileListStyle;
+    CComboBox m_cmbTargetHostFileListStyle;
+    CListCtrl m_lstServerFileList;
+    CListCtrl m_lstTargetHostFileList;
+
+    // The combobox control of target host's driver.
+    CComboBox m_cmbTargetHostDriver;
+    // The list of transfer task.
+    CFileTransferTaskListCtrl m_lstTransferTaskList;
+    // The edit control of target host's path.
+    CEdit m_edtTargetHostFilePath;
+    // The path object of target host.
+    CPath m_pathTartetHostFilePath;
+
+    // The manager of task transmission.
+    CFileTransportManager m_TransportTaskManager;
     afx_msg void OnBnClickedBtnServerSkip();
     virtual BOOL OnInitDialog();
     void ShowFileList(CListCtrl &lstTarget,
-                      CComboBox &cmbDevice, CEdit & edtFilePath, const int & iActiveStyleIdx);
+                      const int &iActiveStyleIdx);
 
     void ChangeListStyle(CListCtrl &lstTarget,
                          int &iActiveStyleIdx,
@@ -107,35 +171,20 @@ public:
                        CEdit &ref_edtFilePath, 
                        CString &ref_csFilename);
 
-    void BackParentDirctory(CComboBox &ref_cmbDevice,
-                            CEdit &ref_edtFilePath);
+    BOOL CFileTransferDlg::BackParentDirctory(
+        FILETRANSMITTIONPARTICIPANTTYPE eParticipantType);
 
     BOOL IsDirectory(CComboBox &ref_cmbDevice,
                      CEdit &ref_edtFilePath, 
                      const CString *TargetFile = NULL);
 
-    // Server端文件列表风格
-    CComboBox m_cmbServerFileListStyle;
-    CComboBox m_cmbTargetHostFileListStyle;
-    CListCtrl m_lstServerFileList;
-    CListCtrl m_lstTargetHostFileList;
-
-    // 目标主机盘符
-    CComboBox m_cmbTargetHostDevice;
-    // 传输任务列表
-    CListCtrl m_lstTransferTask;
-    // 目标主机文件路径
-    CEdit m_edtTargetHostFilePath;
-
-    // The manager of task transmission.
-    CFileTransportManager m_TransportTaskManager;
 
     afx_msg void OnNMDblclkLstServerFilelist(NMHDR *pNMHDR, LRESULT *pResult);
     afx_msg void OnCbnSelchangeCmbServerFilelistStyle();
-    afx_msg void OnCbnSelchangeCmbServerDevice();
+    afx_msg void OnCbnSelchangeCmbServerDriver();
 
     afx_msg void OnCbnSelchangeCmbTargethostFilelistStyle();
-    afx_msg void OnCbnSelchangeCmbTargethostDevice();
+    afx_msg void OnCbnSelchangeCmbTargethostDriver();
     afx_msg void OnBnClickedBtnTargethostSkip();
     afx_msg void OnBnClickedBtnGetfile();
     afx_msg void OnBnClickedBtnPutfile();
@@ -143,4 +192,8 @@ public:
     afx_msg void OnClose();
 protected:
     afx_msg LRESULT OnHasfiledata(WPARAM wParam, LPARAM lParam);
+    afx_msg LRESULT OnFiledlgupdate(WPARAM wParam, LPARAM lParam);
+public:
+    afx_msg void OnDestroy();
+    afx_msg void OnNMRClickLstTransfertask(NMHDR *pNMHDR, LRESULT *pResult);
 };
